@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: PHP Verification Service
+    env: docker
+    dockerfilePath: ./Dockerfile
+    plan: free  # or 'starter' if you'd like more resources
+    envVars:
+      - key: PORT
+        value: 80
+    healthCheckPath: /
