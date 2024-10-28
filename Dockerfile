@@ -4,14 +4,16 @@ FROM php:8.1-apache
 # Enable mod_rewrite for Apache
 RUN a2enmod rewrite
 
+# Install libcurl and other necessary dependencies
+RUN apt-get update && \
+    apt-get install -y libcurl4-openssl-dev pkg-config && \
+    docker-php-ext-install curl
+
 # Copy the PHP script to the container
 COPY index.php /var/www/html/index.php
 
 # Set the working directory
 WORKDIR /var/www/html
-
-# Install necessary extensions (if needed, e.g., curl)
-RUN docker-php-ext-install curl
 
 # Expose port 80
 EXPOSE 80
