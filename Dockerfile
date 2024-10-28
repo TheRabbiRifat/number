@@ -11,6 +11,7 @@ RUN apt-get update && \
 
 # Copy the PHP script to the container
 COPY index.php /var/www/html/index.php
+COPY check-json.php /var/www/html/check-json.php
 
 # Set the working directory
 WORKDIR /var/www/html
