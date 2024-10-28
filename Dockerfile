@@ -5,7 +5,7 @@ FROM php:8.1-apache
 RUN a2enmod rewrite
 
 # Copy the PHP script to the container
-COPY certificate_verify.php /var/www/html/index.php
+COPY index.php /var/www/html/index.php
 
 # Set the working directory
 WORKDIR /var/www/html
