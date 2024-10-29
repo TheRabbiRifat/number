@@ -1,159 +1,134 @@
 <?php
-
-// Set the content type to application/json
 header('Content-Type: application/json');
 
-// Check if the 'number' parameter is provided
-if (!isset($_GET['number']) || empty($_GET['number'])) {
-    echo json_encode([
-        "status" => "error",
-        "message" => "Please provide a valid 'number' parameter."
-    ]);
-    exit;
+// Function to authenticate and get the user ID
+function authenticateAndGetUserId($apiKey, $username, $mysqli) {
+    $stmt = $mysqli->prepare("SELECT id, status FROM users WHERE username = ? AND api_key = ?");
+    $stmt->bind_param('ss', $username, $apiKey);
+    $stmt->execute();
+    $stmt->bind_result($userId, $status);
+    $stmt->fetch();
+    $stmt->close();
+
+    if ($status === 'Active') {
+        return $userId;
+    }
+    return false;
 }
 
-// Get the number parameter from the GET request
-$number = $_GET['number'];
+// Function to deduct API fee
+function deductApiFee($userId, $mysqli) {
+    $stmt = $mysqli->prepare("SELECT tin_fee FROM settings WHERE id = 1");
+    $stmt->execute();
+    $stmt->bind_result($apiFee);
+    $stmt->fetch();
+    $stmt->close();
 
-// Set the target URL with the provided number parameter
-$url = "https://unknownx.top/bio_mainxxx.php?number=" . urlencode($number);
+    $stmt = $mysqli->prepare("SELECT balance FROM users WHERE id = ?");
+    $stmt->bind_param('i', $userId);
+    $stmt->execute();
+    $stmt->bind_result($currentBalance);
+    $stmt->fetch();
+    $stmt->close();
 
-// Initialize a cURL session for the first request
-$ch = curl_init($url);
-curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
+    if ($currentBalance < $apiFee) {
+        throw new Exception('Insufficient balance to process the request.');
+    }
 
-// Execute the cURL request and store the response
-$response = curl_exec($ch);
+    $newBalance = $currentBalance - $apiFee;
 
-// Check for cURL errors or an empty response
-if (curl_errno($ch) || empty($response)) {
-    echo json_encode([
-        "status" => "error",
-        "message" => "No citizen data found"
+    $stmt = $mysqli->prepare("UPDATE users SET balance = ? WHERE id = ?");
+    $stmt->bind_param('di', $newBalance, $userId);
+    $stmt->execute();
+    $stmt->close();
+
+    return $newBalance;
+}
+
+// Function to make the cURL request to the new external API and retrieve response
+function makeApiRequest($newTin, $nid) {
+    $url = 'https://mysectiondata.onrender.com/get_certificate';
+
+    $data = json_encode([
+        "NEW_TIN" => $newTin,
+        "NID" => $nid
     ]);
+
+    $ch = curl_init($url);
+    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+    curl_setopt($ch, CURLOPT_HTTPHEADER, ['Content-Type: application/json']);
+    curl_setopt($ch, CURLOPT_POST, true);
+    curl_setopt($ch, CURLOPT_POSTFIELDS, $data);
+
+    $response = curl_exec($ch);
+    $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
     curl_close($ch);
+
+    return ['response' => $response, 'http_code' => $httpCode];
+}
+
+// Function to log request details in the tin_logs table
+function logTinRequest($userId, $nid, $newTin, $mysqli) {
+    // Replace null or empty values with 'N/A'
+    $nid = $nid ?: 'N/A';
+    $newTin = $newTin ?: 'N/A';
+
+    $stmt = $mysqli->prepare("INSERT INTO tin_logs (user_id, NID, NEW_TIN) VALUES (?, ?, ?)");
+    $stmt->bind_param('iss', $userId, $nid, $newTin);
+    $stmt->execute();
+    $stmt->close();
+}
+
+// Database connection
+$mysqli = new mysqli('203.26.151.171', 'protigga_mydatabase', 'protigga_mydatabase', 'protigga_mydatabase');
+if ($mysqli->connect_error) {
+    die('Connection failed: ' . $mysqli->connect_error);
+}
+
+// Collect input from the user (via POST request)
+$apiKey = $_POST['api_key'] ?? null;
+$username = $_POST['username'] ?? null;
+$newTin = $_POST['NEW_TIN'] ?? null;
+$nid = $_POST['NID'] ?? null;
+
+if (!$apiKey || !$username) {
+    echo json_encode(['error' => 'Missing parameters.']);
     exit;
 }
 
-// Close the first cURL session
-curl_close($ch);
-
-// Decode the JSON response
-$data = json_decode($response, true);
-
-// Check if the expected data is present in the response
-if (isset($data['NAYEEM']['data']['nationalId']) && isset($data['NAYEEM']['data']['dob'])) {
-    // Gather data from the initial response
-    $output = [
-        "msisdn" => $number,
-        "api_owner" => "puffin",
-        "nid" => $data['NAYEEM']['data']['nationalId'],
-        "dob" => $data['NAYEEM']['data']['dob']
-        
-    ];
-
-    // Verification attempt details
-    $verification_method = "none";
-    $successful_nid = $output['nid']; // Initially set to original NID
-
-    // Set up the second request to the verification API
-    $verificationUrl = "https://unknownx.top/verified.php?nid=" . urlencode($output['nid']) . "&num=" . urlencode("+88$number");
-    $ch2 = curl_init($verificationUrl);
-    curl_setopt($ch2, CURLOPT_RETURNTRANSFER, true);
-    curl_setopt($ch2, CURLOPT_SSL_VERIFYPEER, false);
-
-    // Execute the verification request
-    $verificationResponse = curl_exec($ch2);
-    $verificationSuccess = false;
-
-    if (!curl_errno($ch2) && !empty($verificationResponse)) {
-        $verificationData = json_decode($verificationResponse, true);
-        $verificationSuccess = ($verificationData['message'] === "NID VERIFY SUCCESS. AUTHOR @Owner_Of_DCS");
-        if ($verificationSuccess) {
-            $verification_method = "nid";
-            $successful_nid = $output['nid'];
-        }
-    }
-    curl_close($ch2);
-
-    // If verification failed, make a third request to retrieve 'pin'
-    if (!$verificationSuccess) {
-        $backupUrl = "https://protigga.xyz/connection/api2scopy.php?nid=" . urlencode($output['nid']) . "&dob=" . urlencode($output['dob']);
-        $ch3 = curl_init($backupUrl);
-        curl_setopt($ch3, CURLOPT_RETURNTRANSFER, true);
-        curl_setopt($ch3, CURLOPT_SSL_VERIFYPEER, false);
-
-        // Execute the third request and decode the response
-        $backupResponse = curl_exec($ch3);
-        curl_close($ch3);
-
-        if (!curl_errno($ch3) && !empty($backupResponse)) {
-            $backupData = json_decode($backupResponse, true);
-
-            // Check if 'pin' is available
-            if (isset($backupData['pin'])) {
-                // Try verification with the retrieved 'pin'
-                $pinVerificationUrl = "https://unknownx.top/verified.php?nid=" . urlencode($backupData['pin']) . "&num=" . urlencode("+88$number");
-                $ch4 = curl_init($pinVerificationUrl);
-                curl_setopt($ch4, CURLOPT_RETURNTRANSFER, true);
-                curl_setopt($ch4, CURLOPT_SSL_VERIFYPEER, false);
-
-                // Execute the pin verification request
-                $pinVerificationResponse = curl_exec($ch4);
-                curl_close($ch4);
-
-                if (!curl_errno($ch4) && !empty($pinVerificationResponse)) {
-                    $pinVerificationData = json_decode($pinVerificationResponse, true);
-                    $verificationSuccess = ($pinVerificationData['message'] === "NID VERIFY SUCCESS. AUTHOR @Owner_Of_DCS");
-                    if ($verificationSuccess) {
-                        $verification_method = "pin";
-                        $successful_nid = $backupData['pin'];
-                    }
-                }
-
-                // If verification still failed, attempt with modified pin (remove birth year)
-                if (!$verificationSuccess && !empty($backupData['dob'])) {
-                    $birthYear = substr($backupData['dob'], 0, 4);
-                    $modifiedPin = preg_replace('/^' . $birthYear . '/', '', $backupData['pin']);
-
-                    // Try verification with modified pin
-                    $modifiedPinVerificationUrl = "https://unknownx.top/verified.php?nid=" . urlencode($modifiedPin) . "&num=" . urlencode("+88$number");
-                    $ch5 = curl_init($modifiedPinVerificationUrl);
-                    curl_setopt($ch5, CURLOPT_RETURNTRANSFER, true);
-                    curl_setopt($ch5, CURLOPT_SSL_VERIFYPEER, false);
-
-                    // Execute modified pin verification request
-                    $modifiedPinVerificationResponse = curl_exec($ch5);
-                    curl_close($ch5);
-
-                    if (!curl_errno($ch5) && !empty($modifiedPinVerificationResponse)) {
-                        $modifiedPinVerificationData = json_decode($modifiedPinVerificationResponse, true);
-                        $verificationSuccess = ($modifiedPinVerificationData['message'] === "NID VERIFY SUCCESS. AUTHOR @Owner_Of_DCS");
-                        if ($verificationSuccess) {
-                            $verification_method = "pin_13_digit";
-                            $successful_nid = $modifiedPin;
-                        }
-                    }
-                }
-            }
-        }
+try {
+    // Authenticate the user
+    $userId = authenticateAndGetUserId($apiKey, $username, $mysqli);
+    if (!$userId) {
+        echo json_encode(['error' => 'Authentication failed.']);
+        exit;
     }
 
-    // Update the NID in the output to the value that led to successful verification
-    $output['nid'] = $successful_nid;
-    $output['success'] = $verificationSuccess;
-    $output['method'] = $verification_method;
+    // Make the API request to the external service
+    $apiResult = makeApiRequest($newTin, $nid);
+    $apiResponse = $apiResult['response'];
+    $httpCode = $apiResult['http_code'];
 
-    // Output the final result as JSON
-    echo json_encode($output);
+    // Handle HTTP status code 400
+    if ($httpCode === 400 && strpos($apiResponse, 'TIN not found') !== false) {
+        // Do not log or deduct fee
+        echo $apiResponse;
+        exit;
+    }
 
-} else {
-    // If data is missing, respond with an error message
-    echo json_encode([
-        "status" => "error",
-        "message" => "No citizen data found"
-    ]);
+    // Deduct the API fee
+    deductApiFee($userId, $mysqli);
+
+    // Log the request in the tin_logs table
+    logTinRequest($userId, $nid, $newTin, $mysqli);
+
+    // Return the external API response
+    echo $apiResponse;
+
+} catch (Exception $e) {
+    echo json_encode(['error' => $e->getMessage()]);
 }
 
+// Close the database connection
+$mysqli->close();
 ?>
